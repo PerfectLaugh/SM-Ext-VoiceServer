@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+option go_package = "github.com/PerfectLaugh/GoSympho/proto/voiceserver";
+
+package voiceserver;
+
+service VoiceService {
+  rpc SendVoiceData (stream SendVoiceRequest) returns (SendVoiceResponse) {}
+  rpc RecvVoiceData (RecvVoiceRequest) returns (stream RecvVoiceResponse) {}
+}
+
+message SendVoiceRequest {
+  int32 client_index = 1;
+  bytes audio_data = 2;
+}
+
+message SendVoiceResponse {
+}
+
+message RecvVoiceRequest {
+}
+
+message RecvVoiceResponse {
+  uint64 steamid = 1;
+  bytes audio_data = 2;
+}

@@ -1,0 +1,41 @@
+[package]
+name = "voiceserver-ext"
+version = "0.1.0"
+authors = ["PerfectLaugh <denniswu81229@gmail.com>"]
+edition = "2018"
+build = "build.rs"
+
+[lib]
+crate-type = ["staticlib"]
+path = "src/extension.rs"
+
+[features]
+default = ["metamod", "csgo", "protobuf"]
+metamod = []
+csgo = []
+protobuf = []
+
+[dependencies]
+futures-util = "0.3"
+prost = "0.9"
+
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+tonic = "0.6"
+
+lazy_static = "1.4"
+cxx = "1.0"
+
+[build-dependencies]
+cc = "1.0"
+cxx-build = "1.0"
+
+tonic-build = "0.6"
+
+lazy_static = "1.4"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
