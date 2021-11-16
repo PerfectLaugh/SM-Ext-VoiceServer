@@ -17,11 +17,23 @@ static mut RUNTIME: Option<Runtime> = None;
 static mut RUNTIME_THREAD: Option<thread::JoinHandle<()>> = None;
 static mut SHUTDOWN: Option<oneshot::Sender<()>> = None;
 
+const MAXPLAYERS: usize = 64;
+
+mod coder;
+
 type VoiceSenderVec = Vec<mpsc::Sender<Result<RecvVoiceResponse, Status>>>;
 
 lazy_static::lazy_static! {
     static ref SENDVOICEPKTS: Mutex<VecDeque<(i32, Vec<u8>)>> = Mutex::new(VecDeque::new());
     static ref VOICESENDERS: Mutex<VoiceSenderVec> = Mutex::new(Vec::new());
+    static ref DECODERS: Mutex<Vec<coder::Decoder>> = {
+        let mut vec = Vec::new();
+        for _ in 0..MAXPLAYERS {
+            vec.push(coder::Decoder::new());
+        }
+
+        Mutex::new(vec)
+    };
 }
 
 use voiceserver::voice_service_server::{VoiceService, VoiceServiceServer};
@@ -40,14 +52,40 @@ impl VoiceService for VoiceServiceImpl {
         request: Request<tonic::Streaming<SendVoiceRequest>>,
     ) -> Result<Response<SendVoiceResponse>, Status> {
         let mut stream = request.into_inner();
+        let mut encoder = coder::Encoder::new();
 
         while let Some(req) = stream.next().await {
             let req = req?;
 
-            {
-                let mut pending = SENDVOICEPKTS.lock().unwrap();
-                pending.push_back((req.client_index, req.audio_data.clone()));
+            let mut input = Vec::new();
+            for i in 0..(req.audio_data.len() / 2) {
+                let mut v: [u8; 2] = Default::default();
+                v.copy_from_slice(&req.audio_data[i * 2..i * 2 + 2]);
+                input.push(i16::from_le_bytes(v));
             }
+
+            while input.len() % 512 != 0 {
+                input.push(0);
+            }
+
+            let frames = input.len() / 512;
+
+            let mut data = vec![0; frames * 64];
+            for i in 0..frames {
+                match encoder.encode(
+                    &input[i * 512..i * 512 + 512],
+                    &mut data[i * 64..i * 64 + 64],
+                ) {
+                    Ok(_) => {}
+                    Err(err) => {
+                        ffi::log_error(&format!("encode error: {}", err));
+                        continue;
+                    }
+                }
+            }
+
+            let mut pending = SENDVOICEPKTS.lock().unwrap();
+            pending.push_back((req.client_index, data.clone()));
         }
 
         Ok(Response::new(SendVoiceResponse::default()))
@@ -137,8 +175,37 @@ pub fn on_gameframe() {
     }
 }
 
-pub fn on_recv_voicedata(steamid: u64, audio_data: &[u8]) {
-    let audio_data = audio_data.to_vec();
+pub fn on_recv_voicedata(idx: usize, steamid: u64, audio_data: &[u8]) {
+    let data = {
+        let mut decoders = DECODERS.lock().unwrap();
+        if idx >= decoders.len() {
+            return;
+        }
+
+        let frames = audio_data.len() / 64;
+        let mut input = vec![0; 512 * frames];
+
+        for i in 0..frames {
+            match decoders[idx].decode(
+                &audio_data[i * 64..i * 64 + 64],
+                &mut input[i * 512..i * 512 + 512],
+            ) {
+                Ok(_) => {}
+                Err(err) => {
+                    ffi::log_error(&format!("decode error: {}", err));
+                    continue;
+                }
+            };
+        }
+
+        let mut data = vec![0; input.len() * 2];
+        for i in 0..input.len() {
+            data[i * 2..i * 2 + 2].copy_from_slice(&input[i].to_le_bytes());
+        }
+
+        data
+    };
+
     let mut senders = VOICESENDERS.lock().unwrap();
 
     let mut i = 0;
@@ -150,7 +217,7 @@ pub fn on_recv_voicedata(steamid: u64, audio_data: &[u8]) {
 
         let resp = RecvVoiceResponse {
             steamid,
-            audio_data: audio_data.clone(),
+            audio_data: data.clone(),
         };
         let _ = senders[i].try_send(Ok(resp));
         i += 1;
@@ -163,7 +230,7 @@ mod ffi {
         fn init(addr: &str);
         fn shutdown();
         fn on_gameframe();
-        fn on_recv_voicedata(steamid: u64, audio_data: &[u8]);
+        fn on_recv_voicedata(idx: usize, steamid: u64, audio_data: &[u8]);
     }
 
     unsafe extern "C++" {

@@ -26,6 +26,8 @@ tonic = "0.6"
 lazy_static = "1.4"
 cxx = "1.0"
 
+celt-rs = { git = "https://github.com/PerfectLaugh/celt-rs" }
+
 [build-dependencies]
 cc = "1.0"
 cxx-build = "1.0"

@@ -13,14 +13,6 @@
 
 #include <CDetour/detours.h>
 
-#include "ivoicecodec.h"
-
-#ifdef _WIN32
-	#define VAUDIO_LIBRARY "bin/vaudio_celt.dll"
-#else
-    #define VAUDIO_LIBRARY "bin/vaudio_celt_client.so"
-#endif
-#define VAUDIO_QUALITY (3)
 #define VOICESERVER_FAKECLIENT_NAME "Sympho"
 
 void* engineFactory = nullptr;
@@ -43,21 +35,6 @@ static inline IClient *GetIClientFromCGameClient(void *cgameclient)
 	return (IClient*)((intptr_t)cgameclient + sizeof(void*));
 }
 
-#ifdef _WIN32
-#include <Windows.h>
-#else
-#include <dlfcn.h>
-#endif
-
-#ifdef _WIN32
-    typedef HMODULE LIBTYPE;
-#else
-    typedef void* LIBTYPE;
-#endif
-
-LIBTYPE g_pCodecLib = nullptr;
-std::unique_ptr<IVoiceCodec> g_pCodecArray[MAXPLAYERS];
-
 DETOUR_DECL_STATIC3(SV_BroadcastVoiceData, void, IClient*, cl, const CCLCMsg_VoiceData&, msg, bool, unk)
 {
 	auto client_index = cl->GetPlayerSlot();
@@ -74,11 +51,8 @@ DETOUR_DECL_STATIC3(SV_BroadcastVoiceData, void, IClient*, cl, const CCLCMsg_Voi
 
     auto steamid = player->GetSteamId64();
 
-	static char decompressed[1024 * 100];
-	int decompressed_size = g_pCodecArray[client_index]->Decompress(msg.data().c_str(), msg.data().size(), decompressed, sizeof(decompressed));
-
-	rust::Slice<const uint8_t> slice((const uint8_t*)decompressed, decompressed_size * sizeof(int16_t));
-	ext::on_recv_voicedata(steamid, slice);
+	rust::Slice<const uint8_t> slice((const uint8_t*)msg.data().c_str(), msg.data().size());
+	ext::on_recv_voicedata(client_index, steamid, slice);
 
 	DETOUR_STATIC_CALL(SV_BroadcastVoiceData)(cl, msg, unk);
 	return;
@@ -117,30 +91,6 @@ public:
 			return false;
 		}
 
-#ifdef _WIN32
-	    g_pCodecLib = LoadLibrary(VAUDIO_LIBRARY);
-	    auto createInterface = (CreateInterfaceFn)GetProcAddress(g_pCodecLib, "CreateInterface");
-#else
-	    g_pCodecLib = dlopen(VAUDIO_LIBRARY, RTLD_LAZY);
-	    auto createInterface = (CreateInterfaceFn)dlsym(g_pCodecLib, "CreateInterface");
-#endif
-
-	    if (createInterface == nullptr) {
-	    	smutils->Format(error, maxlength, "Could not initialize codec library");
-	        return false;
-	    }
-
-	    for (int i = 0; i < MAXPLAYERS; i++) {
-	    	auto rawcodec = reinterpret_cast<IVoiceCodec*>(createInterface("vaudio_celt", NULL));
-		    if (rawcodec == nullptr) {
-		    	smutils->Format(error, maxlength, "Could not initialize codec from codec library");
-		    	return false;
-		    }
-
-		    g_pCodecArray[i] = std::move(std::unique_ptr<IVoiceCodec>(rawcodec));
-		    g_pCodecArray[i]->Init(VAUDIO_QUALITY);
-	    }
-
 		ext::init(addr_cfg);
 
 		CDetourManager::Init(smutils->GetScriptingEngine(), nullptr);
@@ -158,16 +108,6 @@ public:
 			g_SV_BroadcastVoiceData_Detour->Destroy();
 			g_SV_BroadcastVoiceData_Detour = nullptr;
 		}
-
-		for (int i = 0; i < MAXPLAYERS; i++) {
-		    g_pCodecArray[i].reset(nullptr);
-	    }
-
-#ifdef _WIN32
-	    FreeLibrary(g_pCodecLib);
-#else
-	    dlclose(g_pCodecLib);
-#endif
 
 		smutils->RemoveGameFrameHook(&OnGameFrame);
 
@@ -221,21 +161,14 @@ namespace ext {
         if (cl == nullptr) {
             return;
         }
-
-        int data_size = (int)audio_data.size();
-        if (data_size <= 0) {
+        if (audio_data.size() <= 0) {
         	return;
         }
 
-        auto compressed = new char[data_size];
-        int compressed_size = g_pCodecArray[client_index]->Compress((const char*)audio_data.data(), data_size / sizeof(int16_t), compressed, data_size, false);
-
         CCLCMsg_VoiceData msg;
-        msg.set_data(compressed, compressed_size);
+        msg.set_data((const char*)audio_data.data(), audio_data.size());
 
         DETOUR_STATIC_CALL(SV_BroadcastVoiceData)(cl, msg, false);
-
-        delete[] compressed;
 	}
 
 	void log_error(rust::Str msg) {
