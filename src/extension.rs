@@ -86,7 +86,7 @@ impl VoiceService for VoiceServiceImpl {
             }
 
             let mut pending = SENDVOICEPKTS.lock().unwrap();
-            pending.push_back((req.client_index, data.clone()));
+            pending.push_back((req.client_index, data));
         }
 
         Ok(Response::new(SendVoiceResponse::default()))
