@@ -26,13 +26,13 @@ type VoiceSenderVec = Vec<mpsc::Sender<Result<RecvVoiceResponse, Status>>>;
 lazy_static::lazy_static! {
     static ref SENDVOICEPKTS: Mutex<VecDeque<(i32, Vec<u8>)>> = Mutex::new(VecDeque::new());
     static ref VOICESENDERS: Mutex<VoiceSenderVec> = Mutex::new(Vec::new());
-    static ref DECODERS: Mutex<Vec<coder::Decoder>> = {
+    static ref DECODERS: Vec<Mutex<coder::Decoder>> = {
         let mut vec = Vec::new();
         for _ in 0..MAXPLAYERS {
-            vec.push(coder::Decoder::new());
+            vec.push(Mutex::new(coder::Decoder::new()));
         }
 
-        Mutex::new(vec)
+        vec
     };
 }
 
@@ -56,13 +56,11 @@ impl VoiceService for VoiceServiceImpl {
 
         while let Some(req) = stream.next().await {
             let req = req?;
-
-            let mut input = Vec::new();
-
             if req.audio_data.is_empty() {
                 continue;
             }
 
+            let mut input = Vec::new();
             for chunk in req.audio_data.as_slice().chunks(2) {
                 let mut v: [u8; 2] = Default::default();
                 v.copy_from_slice(chunk);
@@ -141,7 +139,11 @@ pub async fn main(addr: SocketAddr) {
     let vsimpl = VoiceServiceImpl {};
     let svc = VoiceServiceServer::new(vsimpl);
     tokio::select! {
-        _ = Server::builder().add_service(svc).serve(addr) => {},
+        res = Server::builder().add_service(svc).serve(addr) => {
+            if let Err(err) = res {
+                ffi::log_error(&format!("{}", err));
+            }
+        },
         _ = rx => {}
     };
 }
@@ -179,18 +181,22 @@ pub fn on_gameframe() {
 }
 
 pub fn on_recv_voicedata(idx: usize, steamid: u64, audio_data: &[u8]) {
+    if audio_data.is_empty() {
+        return;
+    }
+
     let data = {
-        let mut decoders = DECODERS.lock().unwrap();
-        if idx >= decoders.len() {
+        if idx >= DECODERS.len() {
             return;
         }
+        let mut decoder = DECODERS[idx].lock().unwrap();
 
         let frames = audio_data.len() / 64;
         let mut input = vec![0; 512 * frames];
         let input_iter = input.as_mut_slice().chunks_mut(512);
 
         for (data, input) in audio_data.chunks(64).zip(input_iter) {
-            match decoders[idx].decode(data, input) {
+            match decoder.decode(data, input) {
                 Ok(_) => {}
                 Err(err) => {
                     ffi::log_error(&format!("decode error: {}", err));
