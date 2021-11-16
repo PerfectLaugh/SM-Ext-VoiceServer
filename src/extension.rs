@@ -58,24 +58,27 @@ impl VoiceService for VoiceServiceImpl {
             let req = req?;
 
             let mut input = Vec::new();
-            for i in 0..(req.audio_data.len() / 2) {
+
+            if req.audio_data.is_empty() {
+                continue;
+            }
+
+            for chunk in req.audio_data.as_slice().chunks(2) {
                 let mut v: [u8; 2] = Default::default();
-                v.copy_from_slice(&req.audio_data[i * 2..i * 2 + 2]);
+                v.copy_from_slice(chunk);
                 input.push(i16::from_le_bytes(v));
             }
 
-            while input.len() % 512 != 0 {
-                input.push(0);
+            let mut frames = input.len() / 512;
+            if input.len() % 512 != 0 {
+                frames += 1;
+                input.resize(frames * 512, 0);
             }
 
-            let frames = input.len() / 512;
-
             let mut data = vec![0; frames * 64];
-            for i in 0..frames {
-                match encoder.encode(
-                    &input[i * 512..i * 512 + 512],
-                    &mut data[i * 64..i * 64 + 64],
-                ) {
+            let data_iter = data.as_mut_slice().chunks_mut(64);
+            for (input, data) in input.as_slice().chunks(512).zip(data_iter) {
+                match encoder.encode(input, data) {
                     Ok(_) => {}
                     Err(err) => {
                         ffi::log_error(&format!("encode error: {}", err));
@@ -184,12 +187,10 @@ pub fn on_recv_voicedata(idx: usize, steamid: u64, audio_data: &[u8]) {
 
         let frames = audio_data.len() / 64;
         let mut input = vec![0; 512 * frames];
+        let input_iter = input.as_mut_slice().chunks_mut(512);
 
-        for i in 0..frames {
-            match decoders[idx].decode(
-                &audio_data[i * 64..i * 64 + 64],
-                &mut input[i * 512..i * 512 + 512],
-            ) {
+        for (data, input) in audio_data.chunks(64).zip(input_iter) {
+            match decoders[idx].decode(data, input) {
                 Ok(_) => {}
                 Err(err) => {
                     ffi::log_error(&format!("decode error: {}", err));
@@ -199,8 +200,9 @@ pub fn on_recv_voicedata(idx: usize, steamid: u64, audio_data: &[u8]) {
         }
 
         let mut data = vec![0; input.len() * 2];
-        for i in 0..input.len() {
-            data[i * 2..i * 2 + 2].copy_from_slice(&input[i].to_le_bytes());
+        let input_iter = input.as_slice().iter();
+        for (data, input) in data.as_mut_slice().chunks_mut(2).zip(input_iter) {
+            data.copy_from_slice(&input.to_le_bytes());
         }
 
         data
