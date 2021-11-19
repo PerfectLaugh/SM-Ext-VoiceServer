@@ -121,12 +121,15 @@ pub fn init(addr: &str) {
         ffi::log_error(&panic);
     }));
 
+    let addr = match addr.parse() {
+        Ok(addr) => addr,
+        Err(_) => return,
+    };
+
     let rt = Builder::new_current_thread().enable_all().build().unwrap();
     unsafe {
         RUNTIME.replace(rt);
     }
-
-    let addr = addr.parse().unwrap();
 
     let hndl = thread::spawn(move || unsafe {
         RUNTIME.as_ref().unwrap().block_on(async move {
@@ -157,14 +160,19 @@ pub async fn main(addr: SocketAddr) {
 }
 
 pub fn shutdown() {
-    let tx = unsafe { SHUTDOWN.take().unwrap() };
-    let _ = tx.send(());
+    unsafe {
+        if let Some(tx) = SHUTDOWN.take() {
+            let _ = tx.send(());
+        };
 
-    let hndl = unsafe { RUNTIME_THREAD.take().unwrap() };
-    hndl.join().unwrap();
+        if let Some(hndl) = RUNTIME_THREAD.take() {
+            hndl.join().unwrap();
+        };
 
-    let runtime = unsafe { RUNTIME.take().unwrap() };
-    runtime.shutdown_timeout(Duration::from_millis(100));
+        if let Some(runtime) = RUNTIME.take() {
+            runtime.shutdown_timeout(Duration::from_millis(100));
+        };
+    }
 }
 
 pub fn on_gameframe() {

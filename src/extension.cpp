@@ -87,8 +87,7 @@ public:
 	virtual bool SDK_OnLoad(char *error, size_t maxlength, bool late) {
 		auto addr_cfg = smutils->GetCoreConfigValue("VoiceServerListenAddress");
 	    if (addr_cfg == nullptr) {
-	    	smutils->Format(error, maxlength, "No listen address specified in `VoiceServerListenAddress` in core.cfg");
-	    	return false;
+	    	addr_cfg = "";
 	    }
 
 #ifdef _WIN32
