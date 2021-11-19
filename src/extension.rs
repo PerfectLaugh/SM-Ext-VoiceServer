@@ -34,6 +34,14 @@ lazy_static::lazy_static! {
 
         vec
     };
+    static ref ENCODERS: Vec<Mutex<coder::Encoder>> = {
+        let mut vec = Vec::new();
+        for _ in 0..MAXPLAYERS {
+            vec.push(Mutex::new(coder::Encoder::new()));
+        }
+
+        vec
+    };
 }
 
 use voiceserver::voice_service_server::{VoiceService, VoiceServiceServer};
@@ -180,18 +188,19 @@ pub fn on_gameframe() {
     }
 }
 
-pub fn on_recv_voicedata(idx: usize, steamid: u64, audio_data: &[u8]) {
+pub fn on_recv_voicedata(idx: usize, volume: f32, steamid: u64, audio_data: &[u8]) -> Vec<u8> {
     if audio_data.is_empty() {
-        return;
+        return audio_data.to_vec();
     }
 
-    let data = {
+    let frames = audio_data.len() / 64;
+
+    let (data, mut input) = {
         if idx >= DECODERS.len() {
-            return;
+            return audio_data.to_vec();
         }
         let mut decoder = DECODERS[idx].lock().unwrap();
 
-        let frames = audio_data.len() / 64;
         let mut input = vec![0; 512 * frames];
         let input_iter = input.as_mut_slice().chunks_mut(512);
 
@@ -211,7 +220,32 @@ pub fn on_recv_voicedata(idx: usize, steamid: u64, audio_data: &[u8]) {
             data.copy_from_slice(&input.to_le_bytes());
         }
 
-        data
+        (data, input)
+    };
+
+    for i in input.iter_mut() {
+        *i = (*i as f64 * volume as f64) as i16
+    }
+
+    let ret = {
+        if idx >= DECODERS.len() {
+            return audio_data.to_vec();
+        }
+        let mut encoder = ENCODERS[idx].lock().unwrap();
+
+        let mut ret = vec![0; frames * 64];
+        let ret_iter = ret.as_mut_slice().chunks_mut(64);
+        for (input, ret) in input.as_slice().chunks(512).zip(ret_iter) {
+            match encoder.encode(input, ret) {
+                Ok(_) => {}
+                Err(err) => {
+                    ffi::log_error(&format!("re-encode error: {}", err));
+                    continue;
+                }
+            }
+        }
+
+        ret
     };
 
     let mut senders = VOICESENDERS.lock().unwrap();
@@ -230,6 +264,8 @@ pub fn on_recv_voicedata(idx: usize, steamid: u64, audio_data: &[u8]) {
         let _ = senders[i].try_send(Ok(resp));
         i += 1;
     }
+
+    ret
 }
 
 #[cxx::bridge(namespace = "ext")]
@@ -238,7 +274,7 @@ mod ffi {
         fn init(addr: &str);
         fn shutdown();
         fn on_gameframe();
-        fn on_recv_voicedata(idx: usize, steamid: u64, audio_data: &[u8]);
+        fn on_recv_voicedata(idx: usize, volume: f32, steamid: u64, audio_data: &[u8]) -> Vec<u8>;
     }
 
     unsafe extern "C++" {

@@ -20,6 +20,8 @@ void* engineFactory = nullptr;
 ISDKTools *sdktools = nullptr;
 IServer *iserver = nullptr;
 
+float *g_fClientVolumeMap = nullptr;
+
 CDetour *g_SV_BroadcastVoiceData_Detour = nullptr;
 
 #define MAXPLAYERS (64)
@@ -35,7 +37,7 @@ static inline IClient *GetIClientFromCGameClient(void *cgameclient)
 	return (IClient*)((intptr_t)cgameclient + sizeof(void*));
 }
 
-DETOUR_DECL_STATIC3(SV_BroadcastVoiceData, void, IClient*, cl, const CCLCMsg_VoiceData&, msg, bool, unk)
+DETOUR_DECL_STATIC3(SV_BroadcastVoiceData, void, IClient*, cl, CCLCMsg_VoiceData&, msg, bool, unk)
 {
 	auto client_index = cl->GetPlayerSlot();
 	if (client_index < 0 || client_index >= MAXPLAYERS) {
@@ -50,9 +52,15 @@ DETOUR_DECL_STATIC3(SV_BroadcastVoiceData, void, IClient*, cl, const CCLCMsg_Voi
     }
 
     auto steamid = player->GetSteamId64();
+    auto volume = 1.0;
+    if (g_fClientVolumeMap) {
+    	volume = g_fClientVolumeMap[client_index];
+    }
 
 	rust::Slice<const uint8_t> slice((const uint8_t*)msg.data().c_str(), msg.data().size());
-	ext::on_recv_voicedata(client_index, steamid, slice);
+	auto data = ext::on_recv_voicedata(client_index, volume, steamid, slice);
+
+	msg.mutable_data()->assign((const char*)data.data(), data.size());
 
 	DETOUR_STATIC_CALL(SV_BroadcastVoiceData)(cl, msg, unk);
 	return;
@@ -61,6 +69,8 @@ DETOUR_DECL_STATIC3(SV_BroadcastVoiceData, void, IClient*, cl, const CCLCMsg_Voi
 static void OnGameFrame(bool simulating) {
 	ext::on_gameframe();
 }
+
+extern const sp_nativeinfo_t g_Natives[];
 
 class Ext : public SDKExtension
 {
@@ -98,6 +108,9 @@ public:
 
 		smutils->AddGameFrameHook(&OnGameFrame);
 
+		sharesys->AddNatives(myself, g_Natives);
+		sharesys->RegisterLibrary(myself, "VoiceServer");
+
 		g_SV_BroadcastVoiceData_Detour->EnableDetour();
 
 		return true;
@@ -123,6 +136,22 @@ public:
 
         iserver = sdktools->GetIServer();
     }
+};
+
+static cell_t Native_ClientToVoiceVolumeMap(IPluginContext *pContext, const cell_t *params)
+{
+	if(params[2])
+		pContext->LocalToPhysAddr(params[1], (cell_t **)&g_fClientVolumeMap);
+	else
+		g_fClientVolumeMap = nullptr;
+
+	return 0;
+}
+
+const sp_nativeinfo_t g_Natives[] = 
+{
+	{ "ClientToVoiceVolumeMap", Native_ClientToVoiceVolumeMap },
+	{ nullptr, nullptr },
 };
 
 namespace ext {
