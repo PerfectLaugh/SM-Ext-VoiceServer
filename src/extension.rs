@@ -123,7 +123,10 @@ pub fn init(addr: &str) {
 
     let addr = match addr.parse() {
         Ok(addr) => addr,
-        Err(_) => return,
+        Err(err) => {
+            ffi::log_error(&format!("listen address parse error: {}", err));
+            return;
+        }
     };
 
     let rt = Builder::new_current_thread().enable_all().build().unwrap();
@@ -131,22 +134,20 @@ pub fn init(addr: &str) {
         RUNTIME.replace(rt);
     }
 
+    let (tx, rx) = oneshot::channel();
     let hndl = thread::spawn(move || unsafe {
-        RUNTIME.as_ref().unwrap().block_on(async move {
-            main(addr).await;
+        let runtime = RUNTIME.as_ref().unwrap();
+        runtime.block_on(async move {
+            main(addr, rx).await;
         });
     });
     unsafe {
+        SHUTDOWN.replace(tx);
         RUNTIME_THREAD.replace(hndl);
     }
 }
 
-pub async fn main(addr: SocketAddr) {
-    let (tx, rx) = oneshot::channel();
-    unsafe {
-        SHUTDOWN.replace(tx);
-    }
-
+pub async fn main(addr: SocketAddr, rx: oneshot::Receiver<()>) {
     let vsimpl = VoiceServiceImpl {};
     let svc = VoiceServiceServer::new(vsimpl);
     tokio::select! {
