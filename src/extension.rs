@@ -170,9 +170,7 @@ pub fn shutdown() {
             hndl.join().unwrap();
         };
 
-        if let Some(runtime) = RUNTIME.take() {
-            runtime.shutdown_timeout(Duration::from_millis(100));
-        };
+        RUNTIME.take();
     }
 }
 
