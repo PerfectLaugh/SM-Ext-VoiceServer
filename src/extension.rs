@@ -1,11 +1,9 @@
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::Mutex;
-use std::thread;
 
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::mpsc;
-use tokio::sync::oneshot;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 
@@ -13,8 +11,7 @@ use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
 static mut RUNTIME: Option<Runtime> = None;
-static mut RUNTIME_THREAD: Option<thread::JoinHandle<()>> = None;
-static mut SHUTDOWN: Option<oneshot::Sender<()>> = None;
+static mut RUNTIME_GUARD: Option<tokio::runtime::EnterGuard<'static>> = None;
 
 const MAXPLAYERS: usize = 64;
 
@@ -128,48 +125,31 @@ pub fn init(addr: &str) {
         }
     };
 
-    let rt = Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("voiceserver-ext-pool")
+        .build()
+        .unwrap();
     unsafe {
         RUNTIME.replace(rt);
+        RUNTIME_GUARD.replace(RUNTIME.as_ref().unwrap().enter());
     }
 
-    let (tx, rx) = oneshot::channel();
-    let hndl = thread::spawn(move || unsafe {
-        let runtime = RUNTIME.as_ref().unwrap();
-        runtime.block_on(async move {
-            main(addr, rx).await;
-        });
-    });
-    unsafe {
-        SHUTDOWN.replace(tx);
-        RUNTIME_THREAD.replace(hndl);
-    }
+    tokio::spawn(main(addr));
 }
 
-pub async fn main(addr: SocketAddr, rx: oneshot::Receiver<()>) {
+pub async fn main(addr: SocketAddr) {
     let vsimpl = VoiceServiceImpl {};
     let svc = VoiceServiceServer::new(vsimpl);
-    tokio::select! {
-        res = Server::builder().add_service(svc).serve(addr) => {
-            if let Err(err) = res {
-                ffi::log_error(&format!("{}", err));
-            }
-        },
-        _ = rx => {}
-    };
+    if let Err(err) = Server::builder().add_service(svc).serve(addr).await {
+        ffi::log_error(&format!("{}", err));
+    }
 }
 
 pub fn shutdown() {
     unsafe {
-        if let Some(tx) = SHUTDOWN.take() {
-            let _ = tx.send(());
-        };
-
-        if let Some(hndl) = RUNTIME_THREAD.take() {
-            hndl.join().unwrap();
-        };
-
-        RUNTIME.take();
+        drop(RUNTIME_GUARD.take());
+        drop(RUNTIME.take());
     }
 }
 
