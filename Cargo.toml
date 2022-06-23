@@ -17,11 +17,11 @@ protobuf = []
 
 [dependencies]
 futures-util = "0.3"
-prost = "0.9"
+prost = "0.10"
 
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
-tonic = "0.6"
+tonic = "0.7"
 
 lazy_static = "1.4"
 cxx = "1.0"
@@ -32,7 +32,7 @@ opuscelt-sys = { git = "https://github.com/PerfectLaugh/opuscelt-sys" }
 cc = "1.0"
 cxx-build = "1.0"
 
-tonic-build = "0.6"
+tonic-build = "0.7"
 
 lazy_static = "1.4"
 

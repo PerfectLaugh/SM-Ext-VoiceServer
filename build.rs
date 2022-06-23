@@ -62,12 +62,11 @@ mod metamod {
     }
 
     pub fn configure_for_hl2<P: AsRef<Path>>(mm_root: P, config: &mut cc::Build) {
-        let mms_path;
-        if cfg!(feature = "episode1") {
-            mms_path = mm_root.as_ref().join("core-legacy");
+        let mms_path = if cfg!(feature = "episode1") {
+            mm_root.as_ref().join("core-legacy")
         } else {
-            mms_path = mm_root.as_ref().join("core");
-        }
+            mm_root.as_ref().join("core")
+        };
 
         config.include(&mms_path);
         config.include(mms_path.join("sourcehook"));
